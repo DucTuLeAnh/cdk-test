@@ -2,11 +2,14 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { FargateTaskDefinition } from 'aws-cdk-lib/aws-ecs';
 import { ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import { TableV2 } from 'aws-cdk-lib/aws-dynamodb';
 
 export class CdkTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -79,10 +82,16 @@ export class CdkTestStack extends cdk.Stack {
       executionRole: ecsBackendTaskExecutionRole,
     });
 
+    const dbCryptKey = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_KEY', {parameterName: 'MY_DB_CRYPT_KEY'});
+    const dbCryptSecret = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_SECRET', {parameterName: 'MY_DB_CRYPT_SECRET'});
     ecsBackendTaskDefinition.addContainer('test-backend-container', {
       image: ecs.ContainerImage.fromEcrRepository(backendRepository, 'latest'),
       portMappings: [{ hostPort: 5000, containerPort: 5000, protocol: ecs.Protocol.TCP }],
-      environment: { "SD_HOST_NAME": "test" }
+      environment: { "SD_HOST_NAME": "test" },
+      secrets: {
+        "TWS_ACCESS_KEY_ID": ecs.Secret.fromSsmParameter(dbCryptKey),
+        "TWS_SECRET_ACCESS_KEY": ecs.Secret.fromSsmParameter(dbCryptSecret)
+      }
     });
 
     const service = new ecs.FargateService(this, 'Service', {
@@ -94,5 +103,12 @@ export class CdkTestStack extends cdk.Stack {
     });
 
     ecsBackendTargetGroup.addTarget(service)
+
+    // here come the DB stuff
+    const table: TableV2 = new dynamodb.TableV2(this, 'TestUsers', {
+      partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
+    });
+
+
   }
 }
