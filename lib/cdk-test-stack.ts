@@ -11,6 +11,7 @@ import { FargateTaskDefinition } from 'aws-cdk-lib/aws-ecs';
 import { ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { TableV2 } from 'aws-cdk-lib/aws-dynamodb';
 
+//TODO: figure out a better structure such that you can test deploy parts of the infrasture easier
 export class CdkTestStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -25,39 +26,63 @@ export class CdkTestStack extends cdk.Stack {
 
     });
 
-    const ecsBackendSecurityGroup = new ec2.SecurityGroup(this, 'ecs-backend-sg', {
+    const ecsClusterSecurityGroup = new ec2.SecurityGroup(this, 'ecs-backend-sg', {
       vpc: vpc,
       allowAllOutbound: true
     });
 
     //TODO: check out security best practices in terms of allowing IP's
-    ecsBackendSecurityGroup.addIngressRule(
-      ecsBackendSecurityGroup,
+    ecsClusterSecurityGroup.addIngressRule(
+      ecsClusterSecurityGroup,
       ec2.Port.allTraffic(),
       'Allow all inbound traffic from within the security group'
     );
 
-    ecsBackendSecurityGroup.addIngressRule(
+    ecsClusterSecurityGroup.addIngressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.tcp(5000),
       'Allow all inbound traffic on port 5000'
     );
-    ecsBackendSecurityGroup.addEgressRule(
+    ecsClusterSecurityGroup.addEgressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.tcp(5000),
       'Allow all TCP connections on port 5000 to destination 0.0.0.0/0'
+    );
+
+
+    ecsClusterSecurityGroup.addIngressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(5001),
+      'Allow all inbound traffic on port 5001'
+    );
+    ecsClusterSecurityGroup.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(5001),
+      'Allow all TCP connections on port 5001 to destination 0.0.0.0/0'
     );
 
     const ecsCluster = new ecs.Cluster(this, "ecs-test-cluster", {
       vpc: vpc
     });
 
+    ecsCluster.addDefaultCloudMapNamespace({
+      name: "testCmNs",
+      useForServiceConnect: true
+    })
+
     const backendRepository = ecr.Repository.fromRepositoryAttributes(this, 'test-repo', {
       repositoryArn: ECS_BACKEND_REPO_ARN,
       repositoryName: 'test',
     });
 
-    const ecsBackendTaskExecutionRole = iam.Role.fromRoleArn(this, 'ecsTaskExecutionRole', ECS_BACKEND_TASK_EXECUTION_ROLE, {
+
+    const discoveryServiceRepository = ecr.Repository.fromRepositoryAttributes(this, 'discovery-test-repo', {
+      repositoryArn: ECS_BACKEND_REPO_ARN,
+      repositoryName: 'discovery-test',
+    });
+
+
+    const ecsClusterTaskExecutionRole = iam.Role.fromRoleArn(this, 'ecsTaskExecutionRole', ECS_BACKEND_TASK_EXECUTION_ROLE, {
       mutable: false
     });
 
@@ -72,21 +97,22 @@ export class CdkTestStack extends cdk.Stack {
     });
 
     const ecsBackendTargetGroup = ecsBackendLBListener.addTargets('ApplicationFleet', {
-      port: 5000,
+      port: 5001,
       protocol: ApplicationProtocol.HTTP
     });
 
     const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'DefaultTask', {
       family: 'DefaultTask',
-      taskRole: ecsBackendTaskExecutionRole,
-      executionRole: ecsBackendTaskExecutionRole,
+      taskRole: ecsClusterTaskExecutionRole,
+      executionRole: ecsClusterTaskExecutionRole,
     });
 
     const dbCryptKey = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_KEY', {parameterName: 'MY_DB_CRYPT_KEY'});
     const dbCryptSecret = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_SECRET', {parameterName: 'MY_DB_CRYPT_SECRET'});
+
     ecsBackendTaskDefinition.addContainer('test-backend-container', {
       image: ecs.ContainerImage.fromEcrRepository(backendRepository, 'latest'),
-      portMappings: [{ hostPort: 5000, containerPort: 5000, protocol: ecs.Protocol.TCP }],
+      portMappings: [{ hostPort: 5000, containerPort: 5000, protocol: ecs.Protocol.TCP, name: "backendpm" }],
       environment: { "SD_HOST_NAME": "test" },
       secrets: {
         "TWS_ACCESS_KEY_ID": ecs.Secret.fromSsmParameter(dbCryptKey),
@@ -94,21 +120,44 @@ export class CdkTestStack extends cdk.Stack {
       }
     });
 
-    const service = new ecs.FargateService(this, 'Service', {
+
+    const ecsDiscoveryTaskDefinition = new FargateTaskDefinition(this, 'DiscoveryTask', {
+      family: 'DefaultTask',
+      taskRole: ecsClusterTaskExecutionRole,
+      executionRole: ecsClusterTaskExecutionRole,
+    });
+
+    ecsDiscoveryTaskDefinition.addContainer('test-discovery-service', {
+      image: ecs.ContainerImage.fromEcrRepository(discoveryServiceRepository, 'latest'),
+      portMappings: [{ hostPort: 5001, containerPort: 5001, protocol: ecs.Protocol.TCP, name: "discoverypm" }],
+      environment: { "SD_HOST_NAME": "mybackend:5000" },
+    });
+
+    const backendService = new ecs.FargateService(this, 'Service', {
       cluster: ecsCluster,
       taskDefinition: ecsBackendTaskDefinition,
       desiredCount: 1,
       assignPublicIp: false,
-      securityGroups: [ecsBackendSecurityGroup],
+      securityGroups: [ecsClusterSecurityGroup],
+      serviceConnectConfiguration: {namespace:"testCmNs", services: [{portMappingName: "backendpm", dnsName: "mybackend"}]}
     });
 
-    ecsBackendTargetGroup.addTarget(service)
+
+    const discoveryService = new ecs.FargateService(this, 'DiscoveryService', {
+      cluster: ecsCluster,
+      taskDefinition: ecsDiscoveryTaskDefinition,
+      desiredCount: 1,
+      assignPublicIp: false,
+      securityGroups: [ecsClusterSecurityGroup],
+      serviceConnectConfiguration: {namespace:"testCmNs", services: [{portMappingName: "discoverypm", dnsName: "mydiscovery"}]}
+    });
+
+    ecsBackendTargetGroup.addTarget(discoveryService)
 
     // here come the DB stuff
     const table: TableV2 = new dynamodb.TableV2(this, 'TestUsers', {
       partitionKey: { name: 'email', type: dynamodb.AttributeType.STRING },
     });
-
 
   }
 }
