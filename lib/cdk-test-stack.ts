@@ -8,7 +8,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { FargateTaskDefinition } from 'aws-cdk-lib/aws-ecs';
-import { ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import { ApplicationListenerRule, ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { TableV2 } from 'aws-cdk-lib/aws-dynamodb';
 
 //TODO: figure out a better structure such that you can test deploy parts of the infrasture easier
@@ -81,6 +81,10 @@ export class CdkTestStack extends cdk.Stack {
       repositoryName: 'discovery-test',
     });
 
+    const frontendServiceRepository = ecr.Repository.fromRepositoryAttributes(this, 'frontend-test-repo', {
+      repositoryArn: ECS_BACKEND_REPO_ARN,
+      repositoryName: 'frontend-testo',
+    });
 
     const ecsClusterTaskExecutionRole = iam.Role.fromRoleArn(this, 'ecsTaskExecutionRole', ECS_BACKEND_TASK_EXECUTION_ROLE, {
       mutable: false
@@ -91,15 +95,35 @@ export class CdkTestStack extends cdk.Stack {
       internetFacing: true
     });
 
-    const ecsBackendLBListener = ecsBackendLoadBalancer.addListener('Listener', {
-      port: 80,
-      open: true
+
+    const ecsLBListener = ecsBackendLoadBalancer.addListener('Listener', {
+      port: 5000,
+      protocol: ApplicationProtocol.HTTP,
+      open: true,
     });
 
-    const ecsBackendTargetGroup = ecsBackendLBListener.addTargets('ApplicationFleet', {
-      port: 5001,
-      protocol: ApplicationProtocol.HTTP
+
+    const ecsLBTargetGroup = ecsLBListener.addTargets('ApplicationFleet', {
+      port: 4200,
+      protocol: ApplicationProtocol.HTTP,
+      priority: 1,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(['/', '/start'])
+      ]
     });
+
+
+    const ecsLBTargetGroup2 = ecsLBListener.addTargets('ApplicationFleet2', {
+      port: 5000,
+      priority: 2,
+      protocol: ApplicationProtocol.HTTP,
+      conditions: [
+        elbv2.ListenerCondition.pathPatterns(['/read'])
+      ]
+    });
+
+    ecsLBListener.addTargetGroups("Bla", {targetGroups: [ecsLBTargetGroup, ecsLBTargetGroup2]})
+
 
     const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'DefaultTask', {
       family: 'DefaultTask',
@@ -107,8 +131,8 @@ export class CdkTestStack extends cdk.Stack {
       executionRole: ecsClusterTaskExecutionRole,
     });
 
-    const dbCryptKey = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_KEY', {parameterName: 'MY_DB_CRYPT_KEY'});
-    const dbCryptSecret = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_SECRET', {parameterName: 'MY_DB_CRYPT_SECRET'});
+    const dbCryptKey = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_KEY', { parameterName: 'MY_DB_CRYPT_KEY' });
+    const dbCryptSecret = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_SECRET', { parameterName: 'MY_DB_CRYPT_SECRET' });
 
     ecsBackendTaskDefinition.addContainer('test-backend-container', {
       image: ecs.ContainerImage.fromEcrRepository(backendRepository, 'latest'),
@@ -133,13 +157,25 @@ export class CdkTestStack extends cdk.Stack {
       environment: { "SD_HOST_NAME": "mybackend:5000" },
     });
 
+
+    const ecsFrontendTaskDefinition = new FargateTaskDefinition(this, 'FrontendTask', {
+      family: 'DefaultTask',
+      taskRole: ecsClusterTaskExecutionRole,
+      executionRole: ecsClusterTaskExecutionRole,
+    });
+
+    ecsFrontendTaskDefinition.addContainer('test-frontend', {
+      image: ecs.ContainerImage.fromEcrRepository(frontendServiceRepository, 'latest'),
+      portMappings: [{ hostPort: 4200, containerPort: 4200, protocol: ecs.Protocol.TCP, name: "frontendpm" }],
+    });
+
     const backendService = new ecs.FargateService(this, 'Service', {
       cluster: ecsCluster,
       taskDefinition: ecsBackendTaskDefinition,
       desiredCount: 1,
       assignPublicIp: false,
       securityGroups: [ecsClusterSecurityGroup],
-      serviceConnectConfiguration: {namespace:"testCmNs", services: [{portMappingName: "backendpm", dnsName: "mybackend"}]}
+      serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "backendpm", dnsName: "mybackend" }] }
     });
 
 
@@ -149,10 +185,22 @@ export class CdkTestStack extends cdk.Stack {
       desiredCount: 1,
       assignPublicIp: false,
       securityGroups: [ecsClusterSecurityGroup],
-      serviceConnectConfiguration: {namespace:"testCmNs", services: [{portMappingName: "discoverypm", dnsName: "mydiscovery"}]}
+      serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "discoverypm", dnsName: "mydiscovery" }] }
     });
 
-    ecsBackendTargetGroup.addTarget(discoveryService)
+
+    const frontendService = new ecs.FargateService(this, 'FrontendService', {
+      cluster: ecsCluster,
+      taskDefinition: ecsFrontendTaskDefinition,
+      desiredCount: 1,
+      assignPublicIp: false,
+      securityGroups: [ecsClusterSecurityGroup],
+      serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "frontendpm", dnsName: "myfrontend" }] }
+    });
+
+
+    ecsLBTargetGroup.addTarget(frontendService)
+    ecsLBTargetGroup2.addTarget(backendService)
 
     // here come the DB stuff
     const table: TableV2 = new dynamodb.TableV2(this, 'TestUsers', {
