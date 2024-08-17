@@ -10,6 +10,12 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { FargateTaskDefinition } from 'aws-cdk-lib/aws-ecs';
 import { ApplicationListenerRule, ApplicationProtocol } from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import { TableV2 } from 'aws-cdk-lib/aws-dynamodb';
+import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as elbActions from 'aws-cdk-lib/aws-elasticloadbalancingv2-actions';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import { LoadBalancerTarget } from 'aws-cdk-lib/aws-route53-targets';
+import { PublicHostedZone } from 'aws-cdk-lib/aws-route53';
 
 //TODO: figure out a better structure such that you can test deploy parts of the infrasture easier
 export class CdkTestStack extends cdk.Stack {
@@ -18,6 +24,38 @@ export class CdkTestStack extends cdk.Stack {
 
     const ECS_BACKEND_REPO_ARN: string = process.env.ECS_BACKEND_REPO_ARN ?? ""
     const ECS_BACKEND_TASK_EXECUTION_ROLE: string = process.env.ECS_BACKEND_TASK_EXECUTION_ROLE ?? ""
+    const HOSTED_ZONE_ID: string = process.env.HOSTED_ZONE_ID ?? ""
+    const ZONE_NAME: string = process.env.ZONE_NAME ?? ""
+
+    //COGNITO CONFIG
+
+    /*
+    const userPool = new cognito.UserPool(this, 'MyUserPool', {
+      userPoolName: 'MyAppUserPool',
+      selfSignUpEnabled: true,
+      signInAliases: { email: true },
+      autoVerify: { email: true },
+      passwordPolicy: {
+        minLength: 8,
+        requireLowercase: true,
+        requireSymbols: true,
+        requireUppercase: true,
+      },
+    });
+
+    const userPoolClient = new cognito.UserPoolClient(this, 'MyUserPoolClient', {
+      userPool,
+      generateSecret: false,
+    });
+
+    const domain = new cognito.UserPoolDomain(this, 'CognitoDomain', {
+      userPool,
+      cognitoDomain: {
+        domainPrefix: 'myapp-auth',
+      },
+    });
+    */
+
 
     const vpc = new ec2.Vpc(this, 'my-test-vpc', {
       ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
@@ -25,6 +63,26 @@ export class CdkTestStack extends cdk.Stack {
       enableDnsHostnames: false
 
     });
+
+    // Assuming your domain is already registered in Route 53 TODO: put domain names in environment variables
+    /*
+    const hostedZone = route53.HostedZone.fromLookup(this, 'HostedZone', {
+      domainName: 'johndoestestapp.de',
+    });
+    */
+
+    const hostedZone = PublicHostedZone.fromHostedZoneAttributes(
+      this,
+      'HostedZone',
+      { hostedZoneId: HOSTED_ZONE_ID, zoneName: ZONE_NAME }
+    )
+
+    // Request a certificate for your domain
+    const certificate = new acm.Certificate(this, 'Certificate', {
+      domainName: 'johndoestestapp.de',
+      validation: acm.CertificateValidation.fromDns(hostedZone),
+    });
+
 
     const ecsClusterSecurityGroup = new ec2.SecurityGroup(this, 'ecs-backend-sg', {
       vpc: vpc,
@@ -90,16 +148,25 @@ export class CdkTestStack extends cdk.Stack {
       mutable: false
     });
 
-    const ecsBackendLoadBalancer = new elbv2.ApplicationLoadBalancer(this, 'LB', {
+    const ecsLoadBalancer = new elbv2.ApplicationLoadBalancer(this, 'LB', {
       vpc,
       internetFacing: true
     });
 
 
-    const ecsLBListener = ecsBackendLoadBalancer.addListener('Listener', {
-      port: 5000,
-      protocol: ApplicationProtocol.HTTP,
+    const ecsLBListener = ecsLoadBalancer.addListener('Listener', {
+      port: 443,
+      protocol: ApplicationProtocol.HTTPS,
+      certificates: [certificate],
       open: true,
+    });
+    // Optional: Add a listener for HTTP traffic and redirect it to HTTPS
+    const httpListener = ecsLoadBalancer.addListener('HttpListener', {
+      port: 80,
+      defaultAction: elbv2.ListenerAction.redirect({
+        protocol: 'HTTPS',
+        port: '443',
+      }),
     });
 
 
@@ -122,7 +189,31 @@ export class CdkTestStack extends cdk.Stack {
       ]
     });
 
-    ecsLBListener.addTargetGroups("Bla", {targetGroups: [ecsLBTargetGroup, ecsLBTargetGroup2]})
+
+    ecsLBListener.addTargetGroups("Bla", { targetGroups: [ecsLBTargetGroup, ecsLBTargetGroup2] })
+
+    // Create an Alias record to point to the ALB
+    new route53.ARecord(this, 'AliasRecord', {
+      zone: hostedZone,
+      target: route53.RecordTarget.fromAlias(new LoadBalancerTarget(ecsLoadBalancer)),
+      // If pointing to the root domain (example.com):
+      recordName: '', // leave this empty
+      // If pointing to a subdomain (www.example.com):
+      // recordName: 'www',
+    });
+
+    /*
+    ecsLBListener.addAction('CognitoAuth', {
+      action: new elbActions.AuthenticateCognitoAction({
+        userPool,
+        userPoolClient,
+        userPoolDomain: domain,
+        next: elbv2.ListenerAction.forward([ecsLBTargetGroup]),
+      }),
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/start'])],
+      priority: 1,
+    });
+    */
 
 
     const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'DefaultTask', {
@@ -197,6 +288,21 @@ export class CdkTestStack extends cdk.Stack {
       securityGroups: [ecsClusterSecurityGroup],
       serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "frontendpm", dnsName: "myfrontend" }] }
     });
+
+
+    /*
+    const httpsListener = ecsLoadBalancer.addListener('HttpsListener', {
+      port: 443,
+      certificates: [certificate], // Attach the SSL Certificate
+      defaultTargetGroups: [new elbv2.ApplicationTargetGroup(stack, 'TG', {
+        vpc,
+        targets: [discoveryService.loadBalancerTarget({
+          containerName: 'MyContainer',
+          containerPort: 80,
+        })],
+      })],
+    });
+    */
 
 
     ecsLBTargetGroup.addTarget(frontendService)
