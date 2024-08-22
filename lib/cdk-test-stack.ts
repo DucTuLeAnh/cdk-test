@@ -133,12 +133,6 @@ export class CdkTestStack extends cdk.Stack {
       repositoryName: 'test',
     });
 
-
-    const discoveryServiceRepository = ecr.Repository.fromRepositoryAttributes(this, 'discovery-test-repo', {
-      repositoryArn: ECS_BACKEND_REPO_ARN,
-      repositoryName: 'discovery-test',
-    });
-
     const frontendServiceRepository = ecr.Repository.fromRepositoryAttributes(this, 'frontend-test-repo', {
       repositoryArn: ECS_BACKEND_REPO_ARN,
       repositoryName: 'frontend-testo',
@@ -216,8 +210,7 @@ export class CdkTestStack extends cdk.Stack {
     */
 
 
-    const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'DefaultTask', {
-      family: 'DefaultTask',
+    const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'BackendTask', {
       taskRole: ecsClusterTaskExecutionRole,
       executionRole: ecsClusterTaskExecutionRole,
     });
@@ -236,21 +229,7 @@ export class CdkTestStack extends cdk.Stack {
     });
 
 
-    const ecsDiscoveryTaskDefinition = new FargateTaskDefinition(this, 'DiscoveryTask', {
-      family: 'DefaultTask',
-      taskRole: ecsClusterTaskExecutionRole,
-      executionRole: ecsClusterTaskExecutionRole,
-    });
-
-    ecsDiscoveryTaskDefinition.addContainer('test-discovery-service', {
-      image: ecs.ContainerImage.fromEcrRepository(discoveryServiceRepository, 'latest'),
-      portMappings: [{ hostPort: 5001, containerPort: 5001, protocol: ecs.Protocol.TCP, name: "discoverypm" }],
-      environment: { "SD_HOST_NAME": "mybackend:5000" },
-    });
-
-
     const ecsFrontendTaskDefinition = new FargateTaskDefinition(this, 'FrontendTask', {
-      family: 'DefaultTask',
       taskRole: ecsClusterTaskExecutionRole,
       executionRole: ecsClusterTaskExecutionRole,
     });
@@ -269,17 +248,6 @@ export class CdkTestStack extends cdk.Stack {
       serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "backendpm", dnsName: "mybackend" }] }
     });
 
-
-    const discoveryService = new ecs.FargateService(this, 'DiscoveryService', {
-      cluster: ecsCluster,
-      taskDefinition: ecsDiscoveryTaskDefinition,
-      desiredCount: 1,
-      assignPublicIp: false,
-      securityGroups: [ecsClusterSecurityGroup],
-      serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "discoverypm", dnsName: "mydiscovery" }] }
-    });
-
-
     const frontendService = new ecs.FargateService(this, 'FrontendService', {
       cluster: ecsCluster,
       taskDefinition: ecsFrontendTaskDefinition,
@@ -288,22 +256,6 @@ export class CdkTestStack extends cdk.Stack {
       securityGroups: [ecsClusterSecurityGroup],
       serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "frontendpm", dnsName: "myfrontend" }] }
     });
-
-
-    /*
-    const httpsListener = ecsLoadBalancer.addListener('HttpsListener', {
-      port: 443,
-      certificates: [certificate], // Attach the SSL Certificate
-      defaultTargetGroups: [new elbv2.ApplicationTargetGroup(stack, 'TG', {
-        vpc,
-        targets: [discoveryService.loadBalancerTarget({
-          containerName: 'MyContainer',
-          containerPort: 80,
-        })],
-      })],
-    });
-    */
-
 
     ecsLBTargetGroup.addTarget(frontendService)
     ecsLBTargetGroup2.addTarget(backendService)
