@@ -29,7 +29,6 @@ export class CdkTestStack extends cdk.Stack {
 
     //COGNITO CONFIG
 
-    /*
     const userPool = new cognito.UserPool(this, 'MyUserPool', {
       userPoolName: 'MyAppUserPool',
       selfSignUpEnabled: true,
@@ -45,16 +44,22 @@ export class CdkTestStack extends cdk.Stack {
 
     const userPoolClient = new cognito.UserPoolClient(this, 'MyUserPoolClient', {
       userPool,
-      generateSecret: false,
+      generateSecret: true,
+      oAuth: {
+        callbackUrls: ['https://johndoestestapp.de', 'https://johndoestestapp.de/oauth2/idpresponse'],  // Add your redirect URLs here
+        //logoutUrls: ['https://johndoestestapp.de/'],  // Add your sign-out URLs here
+        flows: {
+          authorizationCodeGrant: true,  // Enable the authorization code grant flow
+        },
+      },
     });
 
     const domain = new cognito.UserPoolDomain(this, 'CognitoDomain', {
       userPool,
       cognitoDomain: {
-        domainPrefix: 'myapp-auth',
+        domainPrefix: 'mytest-domain-34444',
       },
     });
-    */
 
 
     const vpc = new ec2.Vpc(this, 'my-test-vpc', {
@@ -167,16 +172,16 @@ export class CdkTestStack extends cdk.Stack {
     const ecsLBTargetGroup = ecsLBListener.addTargets('ApplicationFleet', {
       port: 4200,
       protocol: ApplicationProtocol.HTTP,
-      priority: 1,
+      priority: 99,
       conditions: [
-        elbv2.ListenerCondition.pathPatterns(['/', '/start'])
+        elbv2.ListenerCondition.pathPatterns(['/'])
       ]
     });
 
 
     const ecsLBTargetGroup2 = ecsLBListener.addTargets('ApplicationFleet2', {
       port: 5000,
-      priority: 2,
+      priority: 1,
       protocol: ApplicationProtocol.HTTP,
       conditions: [
         elbv2.ListenerCondition.pathPatterns(['/read'])
@@ -184,7 +189,7 @@ export class CdkTestStack extends cdk.Stack {
     });
 
 
-    ecsLBListener.addTargetGroups("Bla", { targetGroups: [ecsLBTargetGroup, ecsLBTargetGroup2] })
+    ecsLBListener.addTargetGroups("Bla", {targetGroups: [ecsLBTargetGroup2] })
 
     // Create an Alias record to point to the ALB
     new route53.ARecord(this, 'AliasRecord', {
@@ -196,18 +201,16 @@ export class CdkTestStack extends cdk.Stack {
       // recordName: 'www',
     });
 
-    /*
     ecsLBListener.addAction('CognitoAuth', {
       action: new elbActions.AuthenticateCognitoAction({
-        userPool,
-        userPoolClient,
+        userPool: userPool,
+        userPoolClient: userPoolClient,
         userPoolDomain: domain,
         next: elbv2.ListenerAction.forward([ecsLBTargetGroup]),
       }),
-      conditions: [elbv2.ListenerCondition.pathPatterns(['/start'])],
-      priority: 1,
+      conditions: [elbv2.ListenerCondition.pathPatterns(['/'])],
+      priority: 2,
     });
-    */
 
 
     const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'BackendTask', {
