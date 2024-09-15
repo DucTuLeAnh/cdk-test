@@ -22,7 +22,7 @@ export class EcsCluster extends Construct {
         const ECS_BACKEND_REPO_ARN: string = process.env.ECS_BACKEND_REPO_ARN ?? ""
         const ECS_BACKEND_TASK_EXECUTION_ROLE: string = process.env.ECS_BACKEND_TASK_EXECUTION_ROLE ?? ""
 
-        this.securityGroup = new ec2.SecurityGroup(this, 'ecs-backend-sg', {
+        this.securityGroup = new ec2.SecurityGroup(this, id + '-' + 'ecs-backend-sg', {
             vpc: vpc,
             allowAllOutbound: true
         });
@@ -45,7 +45,6 @@ export class EcsCluster extends Construct {
             'Allow all TCP connections on port 5000 to destination 0.0.0.0/0'
         );
 
-
         this.securityGroup.addIngressRule(
             ec2.Peer.anyIpv4(),
             ec2.Port.tcp(5001),
@@ -57,31 +56,31 @@ export class EcsCluster extends Construct {
             'Allow all TCP connections on port 5001 to destination 0.0.0.0/0'
         );
 
-        this.cluster = new ecs.Cluster(this, "ecs-test-cluster", {
+        this.cluster = new ecs.Cluster(this, id + '-' + "ecsc", {
             vpc: vpc
         });
 
         this.cluster.addDefaultCloudMapNamespace({
-            name: "testCmNs",
+            name: id + '-' + "testCmNs",
             useForServiceConnect: true
         })
 
-        this.backendRepository = ecr.Repository.fromRepositoryAttributes(this, 'test-repo', {
+        this.backendRepository = ecr.Repository.fromRepositoryAttributes(this, id + '-' + 'test-repo', {
             repositoryArn: ECS_BACKEND_REPO_ARN,
             repositoryName: 'test',
         });
 
-        this.frontendServiceRepository = ecr.Repository.fromRepositoryAttributes(this, 'frontend-test-repo', {
+        this.frontendServiceRepository = ecr.Repository.fromRepositoryAttributes(this, id + '-' + 'frontend-test-repo', {
             repositoryArn: ECS_BACKEND_REPO_ARN,
             repositoryName: 'frontend-testo',
         });
 
-        this.ecsClusterTaskExecutionRole = iam.Role.fromRoleArn(this, 'ecsTaskExecutionRole', ECS_BACKEND_TASK_EXECUTION_ROLE, {
+        this.ecsClusterTaskExecutionRole = iam.Role.fromRoleArn(this, id + '-' + 'ecsTaskExecutionRole', ECS_BACKEND_TASK_EXECUTION_ROLE, {
             mutable: false
         });
 
 
-        const ecsBackendTaskDefinition = new FargateTaskDefinition(this, 'BackendTask', {
+        const ecsBackendTaskDefinition = new FargateTaskDefinition(this, id + '-' + 'BackendTask', {
             taskRole: this.ecsClusterTaskExecutionRole,
             executionRole: this.ecsClusterTaskExecutionRole,
         });
@@ -89,9 +88,9 @@ export class EcsCluster extends Construct {
         const dbCryptKey = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_KEY', { parameterName: 'MY_DB_CRYPT_KEY' });
         const dbCryptSecret = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'MY_DB_CRYPT_SECRET', { parameterName: 'MY_DB_CRYPT_SECRET' });
 
-        ecsBackendTaskDefinition.addContainer('test-backend-container', {
+        ecsBackendTaskDefinition.addContainer(id + '-' + 'backend-task', {
             image: ecs.ContainerImage.fromEcrRepository(this.backendRepository, 'latest'),
-            portMappings: [{ hostPort: 5000, containerPort: 5000, protocol: ecs.Protocol.TCP, name: "backendpm" }],
+            portMappings: [{ hostPort: 5000, containerPort: 5000, protocol: ecs.Protocol.TCP, name: id + '-' + "backendpm" }],
             environment: { "SD_HOST_NAME": "test" },
             secrets: {
                 "TWS_ACCESS_KEY_ID": ecs.Secret.fromSsmParameter(dbCryptKey),
@@ -99,39 +98,33 @@ export class EcsCluster extends Construct {
             }
         });
 
-
-        const ecsFrontendTaskDefinition = new FargateTaskDefinition(this, 'FrontendTask', {
+        const ecsFrontendTaskDefinition = new FargateTaskDefinition(this, id + '-' + 'FrontendTask', {
             taskRole: this.ecsClusterTaskExecutionRole,
             executionRole: this.ecsClusterTaskExecutionRole,
         });
 
-        ecsFrontendTaskDefinition.addContainer('test-frontend', {
+        ecsFrontendTaskDefinition.addContainer(id + '-' + 'test-frontend', {
             image: ecs.ContainerImage.fromEcrRepository(this.frontendServiceRepository, 'latest'),
-            portMappings: [{ hostPort: 4200, containerPort: 4200, protocol: ecs.Protocol.TCP, name: "frontendpm" }],
+            portMappings: [{ hostPort: 4200, containerPort: 4200, protocol: ecs.Protocol.TCP, name: id + '-' + "frontendpm" }],
         });
 
-        this.backendService = new ecs.FargateService(this, 'Service', {
+        this.backendService = new ecs.FargateService(this, id + '-' + 'Service', {
             cluster: this.cluster,
             taskDefinition: ecsBackendTaskDefinition,
             desiredCount: 1,
             assignPublicIp: false,
             securityGroups: [this.securityGroup],
-            serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "backendpm", dnsName: "mybackend" }] }
+            serviceConnectConfiguration: { namespace: id + '-' + "testCmNs", services: [{ portMappingName: id + '-' + "backendpm", dnsName: id + '-' + "mybackend" }] }
         });
 
-        this.frontendService = new ecs.FargateService(this, 'FrontendService', {
+        this.frontendService = new ecs.FargateService(this, id + '-' + 'FrontendService', {
             cluster: this.cluster,
             taskDefinition: ecsFrontendTaskDefinition,
             desiredCount: 1,
             assignPublicIp: false,
             securityGroups: [this.securityGroup],
-            serviceConnectConfiguration: { namespace: "testCmNs", services: [{ portMappingName: "frontendpm", dnsName: "myfrontend" }] }
+            serviceConnectConfiguration: { namespace: id + '-' + "testCmNs", services: [{ portMappingName: id + '-' + "frontendpm", dnsName: id + '-' + "myfrontend" }] }
         });
 
-
-
-
-
     }
-
 }

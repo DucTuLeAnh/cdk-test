@@ -9,7 +9,7 @@ export class VpcConfig extends Construct {
     constructor(scope: Construct, id: string) {
         super(scope, id)
 
-        this.vpc = new ec2.Vpc(this, 'my-test-vpc', {
+        this.vpc = new ec2.Vpc(this, id + '-' + 'vpc', {
             ipAddresses: ec2.IpAddresses.cidr('10.0.0.0/16'),
             availabilityZones: ["eu-central-1a", "eu-central-1b"],
             enableDnsHostnames: false
